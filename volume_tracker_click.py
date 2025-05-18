@@ -5,104 +5,96 @@ import cv2
 import mediapipe as mp
 import pyautogui
 from math import sqrt
+import time
+
 pyautogui.FAILSAFE = False
 
 # Initialize variables
 x1 = y1 = x2 = y2 = x3 = y3 = 0
+last_click_time = 0
+click_cooldown = 1  # seconds
 
 # Set up the webcam
 webcam = cv2.VideoCapture(0)
+if not webcam.isOpened():
+    print("Error: Webcam not accessible.")
+    exit()
 
 # Initialize MediaPipe hands
 mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(static_image_mode=False, max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5)
+hands = mp_hands.Hands(static_image_mode=False, max_num_hands=2,
+                       min_detection_confidence=0.5, min_tracking_confidence=0.5)
 mp_drawing = mp.solutions.drawing_utils
 
-# Get screen size for mouse control
+# Get screen size
 screen_width, screen_height = pyautogui.size()
 
-# Define the control area scaling factor (reduce the control area)
+# Constants
 control_area_scaling = 1.3
-
-# Define the mouse speed factor (increase the speed)
 mouse_speed_factor = 1.4
+
+def calculate_distance(x1, y1, x2, y2):
+    return sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
 
 while True:
     ret, image = webcam.read()
     if not ret:
         break
 
-    # Flip the image horizontally for a later selfie-view display
     image = cv2.flip(image, 1)
-
-    # Convert the BGR image to RGB
     rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-    # Process the image and find hands
     result = hands.process(rgb_image)
-
-    # Get the frame dimensions
     frame_height, frame_width, _ = image.shape
 
-    # Draw hand landmarks and calculate distances
     if result.multi_hand_landmarks:
         for idx, hand_landmarks in enumerate(result.multi_hand_landmarks):
             mp_drawing.draw_landmarks(image, hand_landmarks, mp_hands.HAND_CONNECTIONS)
             handedness = result.multi_handedness[idx].classification[0].label
 
-            for id, landmark in enumerate(hand_landmarks.landmark):
-                x = int(landmark.x * frame_width)
-                y = int(landmark.y * frame_height)
-                if id == 8:  # Index finger tip
-                    cv2.circle(image, (x, y), 8, (0, 255, 255), 3)
-                    x1 = x
-                    y1 = y
-                if id == 4:  # Thumb tip
-                    cv2.circle(image, (x, y), 8, (255, 255, 0), 3)
-                    x2 = x
-                    y2 = y
-                if id == 12:  # Middle finger tip
-                    cv2.circle(image, (x, y), 8, (0, 255, 0), 3)
-                    x3 = x
-                    y3 = y
+            coords = {}
+            for id, lm in enumerate(hand_landmarks.landmark):
+                x = int(lm.x * frame_width)
+                y = int(lm.y * frame_height)
+                coords[id] = (x, y)
 
-            # Calculate the distance between index finger tip and thumb tip
-            dist_thumb_index = sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2) // 4
+            if 4 in coords and 8 in coords and 12 in coords:
+                x1, y1 = coords[8]   # index
+                x2, y2 = coords[4]   # thumb
+                x3, y3 = coords[12]  # middle
 
-            # Calculate the distance between thumb tip and middle finger tip
-            dist_thumb_middle = sqrt((x2 - x3) ** 2 + (y2 - y3) ** 2)
+                dist_thumb_index = calculate_distance(x1, y1, x2, y2)
+                dist_thumb_middle = calculate_distance(x2, y2, x3, y3)
 
-            if handedness == "Right":
-                # Right hand controls mouse movement
-                if dist_thumb_middle > 70:
-                    # Reduce the control area by scaling the hand coordinates
-                    screen_x = screen_width * (hand_landmarks.landmark[8].x - 0.5) * control_area_scaling + screen_width / 2
-                    screen_y = screen_height * (hand_landmarks.landmark[8].y - 0.5) * control_area_scaling + screen_height / 2
-                    # Increase the mouse movement speed
-                    current_mouse_x, current_mouse_y = pyautogui.position()
-                    pyautogui.moveTo(current_mouse_x + (screen_x - current_mouse_x) * mouse_speed_factor, 
-                                     current_mouse_y + (screen_y - current_mouse_y) * mouse_speed_factor)
-                else:
-                    # Adjust the system volume based on the distance between thumb and index finger
-                    if dist_thumb_index > 15:
-                        pyautogui.press("volumeup")
+                if handedness == "Right":
+                    if dist_thumb_middle > 70:
+                        # Mouse control
+                        screen_x = screen_width * (hand_landmarks.landmark[8].x - 0.5) * control_area_scaling + screen_width / 2
+                        screen_y = screen_height * (hand_landmarks.landmark[8].y - 0.5) * control_area_scaling + screen_height / 2
+                        curr_x, curr_y = pyautogui.position()
+                        pyautogui.moveTo(curr_x + (screen_x - curr_x) * mouse_speed_factor,
+                                         curr_y + (screen_y - curr_y) * mouse_speed_factor)
                     else:
-                        pyautogui.press("volumedown")
-                    cv2.line(image, (x1, y1), (x2, y2), (0, 255, 0), 5)
+                        # Volume control
+                        if dist_thumb_index > 40:
+                            pyautogui.press("volumeup")
+                        elif dist_thumb_index < 20:
+                            pyautogui.press("volumedown")
+                        cv2.line(image, (x1, y1), (x2, y2), (0, 255, 0), 3)
 
-            elif handedness == "Left":
-                # Left hand for click action
-                if dist_thumb_middle < 70:
-                    pyautogui.click()
-                    cv2.line(image, (x1, y1), (x3, y3), (0, 0, 255), 5)
+                elif handedness == "Left":
+                    if dist_thumb_index < 30:
+                        current_time = time.time()
+                        if current_time - last_click_time > click_cooldown:
+                            pyautogui.click()
+                            last_click_time = current_time
+                        cv2.line(image, (x1, y1), (x2, y2), (0, 0, 255), 3)
 
-    # Display the image
-    cv2.imshow("Hand volume control and Mouse Tracker", image)
+    # Resize output window for larger view
+    scaled_image = cv2.resize(image, None, fx=1.5, fy=1.5)
+    cv2.imshow("Hand Gesture Control", scaled_image)
 
-    # Exit on pressing 'ESC'
     if cv2.waitKey(10) & 0xFF == 27:
         break
 
-# Release the webcam and destroy all windows
 webcam.release()
 cv2.destroyAllWindows()
